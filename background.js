@@ -17,44 +17,94 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "open_drawio" && request.xml) {
-        processXml(request.xml);
+    if (request.action === 'open_drawio') {
+        processDiagram(request.content || request.xml, request.type || 'xml');
     }
 });
 
 // Handle the context menu click
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === "open-in-drawio" && info.selectionText) {
-        processXml(info.selectionText);
+    if (info.menuItemId === "open-in-drawio") {
+        // Instead of using info.selectionText directly, ask the content script for the context
+        // This allows us to get the full code block content if the user selected part of it
+        if (tab && tab.id) {
+            chrome.tabs.sendMessage(tab.id, { action: 'get_selection_context' }, (response) => {
+                if (chrome.runtime.lastError) {
+                    // Fallback if content script is not ready or error
+                    console.warn("Content script error:", chrome.runtime.lastError);
+                    if (info.selectionText) {
+                        const type = detectTypeFromText(info.selectionText);
+                        processDiagram(info.selectionText, type);
+                    }
+                } else if (response && response.content) {
+                    processDiagram(response.content, response.type || 'xml');
+                } else if (info.selectionText) {
+                    // Fallback if no response content
+                    const type = detectTypeFromText(info.selectionText);
+                    processDiagram(info.selectionText, type);
+                }
+            });
+        }
     }
 });
 
+function detectTypeFromText(text) {
+    if (!text) return 'xml';
+
+    // Mermaid keywords
+    if (/^\s*(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph)/.test(text)) {
+        return 'mermaid';
+    }
+
+    // XML check
+    if (text.includes('</mxfile>') || text.includes('</mxGraphModel>')) {
+        return 'xml';
+    }
+
+    // Default to XML if unsure (or maybe we should default to nothing? But existing behavior was XML)
+    return 'xml';
+}
+
 /**
- * Processes the XML string: compresses it and opens Draw.io
- * @param {string} xmlText 
+ * Processes the content: opens Draw.io with XML or Mermaid
+ * @param {string} content 
+ * @param {string} type 'xml' or 'mermaid'
  */
-async function processXml(xmlText) {
+async function processDiagram(content, type) {
     try {
-        const xml = xmlText.trim();
-        if (!xml) return;
+        if (!content) return;
 
-        // 0. Sanitize XML
-        const sanitizedXml = sanitizeXml(xml);
+        if (type === 'mermaid') {
+            // Mermaid: Use 'create' URL parameter with JSON
+            // https://app.diagrams.net/?create={type:'mermaid',data:'...'}
+            const config = {
+                type: 'mermaid',
+                data: content
+            };
+            const url = `https://app.diagrams.net/?create=${encodeURIComponent(JSON.stringify(config))}`;
+            chrome.tabs.create({ url: url });
+        } else {
+            // XML: Use #R compression
+            const xml = content.trim();
 
-        // 1. Compress the XML using deflate-raw
-        const compressed = await compressData(sanitizedXml);
+            // 1. Sanitize
+            const sanitizedXml = sanitizeXml(xml);
 
-        // 2. Convert to Base64
-        const base64 = arrayBufferToBase64(compressed);
+            // 2. Compress the XML using deflate-raw
+            const compressed = await compressData(sanitizedXml);
 
-        // 3. URL Encode
-        // Draw.io #R format expects standard Base64 (deflate-raw).
-        const url = `https://app.diagrams.net/#R${base64}`;
+            // 3. Convert to Base64
+            const base64 = arrayBufferToBase64(compressed);
 
-        chrome.tabs.create({ url: url });
+            // 4. URL Encode
+            // Draw.io #R format expects standard Base64 (deflate-raw).
+            const url = `https://app.diagrams.net/#R${base64}`;
+
+            chrome.tabs.create({ url: url });
+        }
 
     } catch (error) {
-        console.error("Error processing Draw.io XML:", error);
+        console.error("Error processing Draw.io diagram:", error);
     }
 }
 

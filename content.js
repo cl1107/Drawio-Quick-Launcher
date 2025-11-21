@@ -2,13 +2,33 @@
 
 const BUTTON_ID_PREFIX = 'drawio-launcher-btn-';
 
-function isDrawioXml(text) {
-    if (!text || text.length < 50) return false;
-    return text.includes('</mxfile>"') ||
-        (text.includes('</mxGraphModel>'));
+function detectDiagramType(text, element) {
+    if (!text || text.length < 10) return null;
+
+    // Check for Mermaid
+    // 1. Check class on the CODE element (most common)
+    if (element && (element.classList.contains('language-mermaid') || element.classList.contains('mermaid'))) {
+        return 'mermaid';
+    }
+    // 2. Check class on the PRE element (sometimes)
+    const pre = element ? element.closest('pre') : null;
+    if (pre && (pre.classList.contains('language-mermaid') || pre.classList.contains('mermaid'))) {
+        return 'mermaid';
+    }
+    // 3. Heuristic check for Mermaid keywords if no class found (optional, but good for robustness)
+    if (/^\s*(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph)/.test(text)) {
+        return 'mermaid';
+    }
+
+    // Check for Draw.io XML
+    if (text.includes('</mxfile>"') || (text.includes('</mxGraphModel>'))) {
+        return 'xml';
+    }
+
+    return null;
 }
 
-function createButton(xml) {
+function createButton(content, type) {
     const btn = document.createElement('button');
     btn.textContent = 'Open in Draw.io';
     btn.style.cssText = `
@@ -31,7 +51,7 @@ function createButton(xml) {
   `;
     btn.addEventListener('click', (e) => {
         e.stopPropagation(); // Prevent triggering code block selection
-        chrome.runtime.sendMessage({ action: 'open_drawio', xml: xml });
+        chrome.runtime.sendMessage({ action: 'open_drawio', content: content, type: type });
     });
     return btn;
 }
@@ -55,17 +75,20 @@ const processPendingBlocks = debounce(() => {
 
         const codeElement = block.querySelector('code');
         const text = codeElement ? codeElement.textContent : block.textContent;
-        if (isDrawioXml(text)) {
+
+        const type = detectDiagramType(text, codeElement || block);
+
+        if (type) {
             block.dataset.drawioProcessed = 'true';
 
             // Create Top Button
-            const btnTop = createButton(text);
+            const btnTop = createButton(text, type);
             btnTop.style.float = 'right';
             btnTop.style.marginRight = '8px';
             btnTop.style.marginTop = '8px';
 
             // Create Bottom Button
-            const btnBottom = createButton(text);
+            const btnBottom = createButton(text, type);
             btnBottom.style.float = 'right';
             btnBottom.style.marginRight = '8px';
             btnBottom.style.marginBottom = '8px';
@@ -163,3 +186,38 @@ document.querySelectorAll('pre').forEach(pre => {
     pendingBlocks.add(pre);
 });
 processPendingBlocks();
+
+// Listen for context menu requests
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'get_selection_context') {
+        const selection = window.getSelection();
+        let content = selection.toString();
+        let type = detectDiagramType(content);
+
+        if (selection.rangeCount > 0) {
+            const anchorNode = selection.anchorNode;
+            if (anchorNode) {
+                // Find parent PRE or CODE
+                const element = anchorNode.nodeType === 1 ? anchorNode : anchorNode.parentElement;
+                const pre = element.closest('pre');
+
+                if (pre) {
+                    // If we are inside a PRE, try to get the full code content
+                    const codeElement = pre.querySelector('code');
+                    const fullText = codeElement ? codeElement.textContent : pre.textContent;
+
+                    // Check if the selection is actually part of this block
+                    // (Simple check: is the selected text contained in the full text?)
+                    // A better check might be to see if the selection range intersects the pre
+
+                    // For now, if we found a PRE, let's assume the user wants that block's content
+                    // This fixes the "partial selection" or "formatted selection" issue
+                    content = fullText;
+                    type = detectDiagramType(content, codeElement || pre);
+                }
+            }
+        }
+
+        sendResponse({ content: content, type: type });
+    }
+});
