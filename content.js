@@ -88,6 +88,9 @@ function debounce(func, wait) {
 // Set to track blocks that need processing
 const pendingBlocks = new Set();
 
+// WeakSet to track already processed blocks (more performant than dataset)
+const processedBlocks = new WeakSet();
+
 // Helper function to check if a CODE element is relevant for our extension
 function isRelevantCodeBlock(codeElement) {
     if (!codeElement || codeElement.tagName !== 'CODE') return false;
@@ -103,7 +106,7 @@ function isRelevantCodeBlock(codeElement) {
 const processPendingBlocks = debounce(() => {
     pendingBlocks.forEach(block => {
         // If already processed successfully, skip (unless we want to support updates, but usually once is enough)
-        if (block.dataset.drawioProcessed === 'true') return;
+        if (processedBlocks.has(block)) return;
 
         // Extract text and detect type
         let text, codeElement;
@@ -121,7 +124,7 @@ const processPendingBlocks = debounce(() => {
         const type = detectDiagramType(text, codeElement || block);
 
         if (type) {
-            block.dataset.drawioProcessed = 'true';
+            processedBlocks.add(block);
 
             // Check if we're on Claude.ai for button positioning
             const isClaudeAi = window.location.hostname.includes('claude.ai');
@@ -193,7 +196,7 @@ const processPendingBlocks = debounce(() => {
         }
     });
     pendingBlocks.clear();
-}, 1000); // Wait 1s after last change to process (good for streaming completion)
+}, 100); // Wait 100ms after last change to process (faster response, still debounced)
 
 // Observer for dynamic content (SPA) and Streaming
 const observer = new MutationObserver((mutations) => {
@@ -208,17 +211,25 @@ const observer = new MutationObserver((mutations) => {
 
                     // Direct check for PRE or CODE
                     if (tagName === 'PRE') {
+                        // Early exit if already processed
+                        if (processedBlocks.has(node)) continue;
+
                         // If PRE has a relevant CODE child, add the CODE child instead
                         const codeChild = node.querySelector('code');
                         if (codeChild && isRelevantCodeBlock(codeChild)) {
-                            pendingBlocks.add(codeChild);
-                            shouldProcess = true;
+                            if (!processedBlocks.has(codeChild)) {
+                                pendingBlocks.add(codeChild);
+                                shouldProcess = true;
+                            }
                         } else {
                             // Otherwise add PRE (fallback)
                             pendingBlocks.add(node);
                             shouldProcess = true;
                         }
                     } else if (tagName === 'CODE') {
+                        // Early exit if already processed
+                        if (processedBlocks.has(node)) continue;
+
                         if (isRelevantCodeBlock(node)) {
                             pendingBlocks.add(node);
                             shouldProcess = true;
@@ -230,7 +241,7 @@ const observer = new MutationObserver((mutations) => {
                         // Prioritize CODE elements
                         const codes = node.getElementsByTagName('code');
                         for (const code of codes) {
-                            if (isRelevantCodeBlock(code)) {
+                            if (!processedBlocks.has(code) && isRelevantCodeBlock(code)) {
                                 pendingBlocks.add(code);
                                 shouldProcess = true;
                             }
@@ -239,6 +250,8 @@ const observer = new MutationObserver((mutations) => {
                         // Check PRE elements, but skip if they contain relevant CODE (to avoid duplicates)
                         const pres = node.getElementsByTagName('pre');
                         for (const pre of pres) {
+                            if (processedBlocks.has(pre)) continue;
+
                             const codeChild = pre.querySelector('code');
                             if (!codeChild || !isRelevantCodeBlock(codeChild)) {
                                 pendingBlocks.add(pre);
@@ -252,17 +265,21 @@ const observer = new MutationObserver((mutations) => {
                     if (parent) {
                         const parentTagName = parent.tagName;
                         if (parentTagName === 'PRE') {
+                            if (processedBlocks.has(parent)) continue;
+
                             // If PRE has CODE, ignore PRE
                             const codeChild = parent.querySelector('code');
                             if (codeChild && isRelevantCodeBlock(codeChild)) {
-                                pendingBlocks.add(codeChild);
-                                shouldProcess = true;
+                                if (!processedBlocks.has(codeChild)) {
+                                    pendingBlocks.add(codeChild);
+                                    shouldProcess = true;
+                                }
                             } else {
                                 pendingBlocks.add(parent);
                                 shouldProcess = true;
                             }
                         } else if (parentTagName === 'CODE') {
-                            if (isRelevantCodeBlock(parent)) {
+                            if (!processedBlocks.has(parent) && isRelevantCodeBlock(parent)) {
                                 pendingBlocks.add(parent);
                                 shouldProcess = true;
                             }
@@ -271,16 +288,20 @@ const observer = new MutationObserver((mutations) => {
                             const grandParent = parent.parentElement;
                             if (grandParent) {
                                 if (grandParent.tagName === 'PRE') {
+                                    if (processedBlocks.has(grandParent)) continue;
+
                                     // If PRE has CODE, ignore PRE
                                     const codeChild = grandParent.querySelector('code');
                                     if (codeChild && isRelevantCodeBlock(codeChild)) {
-                                        pendingBlocks.add(codeChild);
-                                        shouldProcess = true;
+                                        if (!processedBlocks.has(codeChild)) {
+                                            pendingBlocks.add(codeChild);
+                                            shouldProcess = true;
+                                        }
                                     } else {
                                         pendingBlocks.add(grandParent);
                                         shouldProcess = true;
                                     }
-                                } else if (grandParent.tagName === 'CODE' && isRelevantCodeBlock(grandParent)) {
+                                } else if (grandParent.tagName === 'CODE' && !processedBlocks.has(grandParent) && isRelevantCodeBlock(grandParent)) {
                                     pendingBlocks.add(grandParent);
                                     shouldProcess = true;
                                 }
@@ -298,17 +319,21 @@ const observer = new MutationObserver((mutations) => {
             if (parent) {
                 const parentTagName = parent.tagName;
                 if (parentTagName === 'PRE') {
+                    if (processedBlocks.has(parent)) continue;
+
                     // If PRE has CODE, ignore PRE
                     const codeChild = parent.querySelector('code');
                     if (codeChild && isRelevantCodeBlock(codeChild)) {
-                        pendingBlocks.add(codeChild);
-                        shouldProcess = true;
+                        if (!processedBlocks.has(codeChild)) {
+                            pendingBlocks.add(codeChild);
+                            shouldProcess = true;
+                        }
                     } else {
                         pendingBlocks.add(parent);
                         shouldProcess = true;
                     }
                 } else if (parentTagName === 'CODE') {
-                    if (isRelevantCodeBlock(parent)) {
+                    if (!processedBlocks.has(parent) && isRelevantCodeBlock(parent)) {
                         pendingBlocks.add(parent);
                         shouldProcess = true;
                     }
@@ -322,10 +347,13 @@ const observer = new MutationObserver((mutations) => {
     }
 });
 
+// Check if we're on Claude.ai - disable characterData observation for better performance
+const isClaudeAi = window.location.hostname.includes('claude.ai');
+
 observer.observe(document.body, {
     childList: true,
     subtree: true,
-    characterData: true // Important for streaming text updates
+    characterData: !isClaudeAi // Disable for Claude.ai to improve code block expansion performance
 });
 
 // Initial pass
