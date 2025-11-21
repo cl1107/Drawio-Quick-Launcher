@@ -21,7 +21,22 @@ function detectDiagramType(text, element) {
     }
 
     // Check for Draw.io XML
-    if (text.includes('</mxfile>"') || (text.includes('</mxGraphModel>'))) {
+    // 1. Check class on the CODE or PRE element
+    if (element && (element.classList.contains('language-xml') || element.classList.contains('xml'))) {
+        // Optional: Add a light check to ensure it's not just random XML
+        if (text.includes('mxGraphModel') || text.includes('mxfile')) {
+            return 'xml';
+        }
+    }
+    const preXml = element ? element.closest('pre') : null;
+    if (preXml && (preXml.classList.contains('language-xml') || preXml.classList.contains('xml'))) {
+        if (text.includes('mxGraphModel') || text.includes('mxfile')) {
+            return 'xml';
+        }
+    }
+
+    // 2. Text check (relaxed)
+    if (text.includes('</mxfile>') || text.includes('</mxGraphModel>')) {
         return 'xml';
     }
 
@@ -31,8 +46,13 @@ function detectDiagramType(text, element) {
 function createButton(content, type) {
     const btn = document.createElement('button');
     btn.textContent = 'Open in Draw.io';
+
+    // Check if we're on Claude.ai
+    const isClaudeAi = window.location.hostname.includes('claude.ai');
+    const floatDirection = isClaudeAi ? 'left' : 'right';
+
     btn.style.cssText = `
-    float: right;
+    float: ${floatDirection};
     margin: 8px;
     padding: 0 12px;
     height: 28px;
@@ -68,54 +88,110 @@ function debounce(func, wait) {
 // Set to track blocks that need processing
 const pendingBlocks = new Set();
 
+// Helper function to check if a CODE element is relevant for our extension
+function isRelevantCodeBlock(codeElement) {
+    if (!codeElement || codeElement.tagName !== 'CODE') return false;
+
+    const classes = codeElement.className || '';
+    // Check for language classes that indicate XML or Mermaid
+    return classes.includes('language-xml') ||
+        classes.includes('language-mermaid') ||
+        classes.includes('xml') ||
+        classes.includes('mermaid');
+}
+
 const processPendingBlocks = debounce(() => {
     pendingBlocks.forEach(block => {
         // If already processed successfully, skip (unless we want to support updates, but usually once is enough)
         if (block.dataset.drawioProcessed === 'true') return;
 
-        const codeElement = block.querySelector('code');
-        const text = codeElement ? codeElement.textContent : block.textContent;
+        // Extract text and detect type
+        let text, codeElement;
+
+        if (block.tagName === 'CODE') {
+            // Standalone CODE element (e.g., Claude.ai)
+            text = block.textContent;
+            codeElement = block;
+        } else {
+            // PRE element (e.g., ChatGPT)
+            codeElement = block.querySelector('code');
+            text = codeElement ? codeElement.textContent : block.textContent;
+        }
 
         const type = detectDiagramType(text, codeElement || block);
 
         if (type) {
             block.dataset.drawioProcessed = 'true';
 
-            // Create Top Button
-            const btnTop = createButton(text, type);
-            btnTop.style.float = 'right';
-            btnTop.style.marginRight = '8px';
-            btnTop.style.marginTop = '8px';
+            // Check if we're on Claude.ai for button positioning
+            const isClaudeAi = window.location.hostname.includes('claude.ai');
 
-            // Create Bottom Button
-            const btnBottom = createButton(text, type);
-            btnBottom.style.float = 'right';
-            btnBottom.style.marginRight = '8px';
-            btnBottom.style.marginBottom = '8px';
-            btnBottom.style.marginTop = '8px'; // Add some space from text
+            if (isClaudeAi) {
+                // Claude specific layout: Block layout (own line) using SPAN (phrasing content) to be valid inside CODE
 
-            // Insert Top Button
-            if (block.firstChild) {
-                block.insertBefore(btnTop, block.firstChild);
+                // Top Button Container
+                const topContainer = document.createElement('span');
+                topContainer.style.cssText = 'display: flex; justify-content: flex-start; margin-bottom: 8px; width: 100%;';
+
+                const btnTop = createButton(text, type);
+                // Override styles for block layout
+                btnTop.style.float = 'none';
+                btnTop.style.margin = '0';
+
+                topContainer.appendChild(btnTop);
+
+                // Bottom Button Container
+                const bottomContainer = document.createElement('span');
+                bottomContainer.style.cssText = 'display: flex; justify-content: flex-start; margin-top: 8px; width: 100%;';
+
+                const btnBottom = createButton(text, type);
+                btnBottom.style.float = 'none';
+                btnBottom.style.margin = '0';
+
+                bottomContainer.appendChild(btnBottom);
+
+                // Insert Top Container
+                if (block.firstChild) {
+                    block.insertBefore(topContainer, block.firstChild);
+                } else {
+                    block.appendChild(topContainer);
+                }
+
+                // Insert Bottom Container
+                block.appendChild(bottomContainer);
+
             } else {
-                block.appendChild(btnTop);
-            }
+                // Default Layout (Float) for ChatGPT, etc.
+                const floatDirection = 'right';
 
-            // Insert Bottom Button
-            block.appendChild(btnBottom);
+                // Create Top Button
+                const btnTop = createButton(text, type);
+                btnTop.style.float = floatDirection;
+                btnTop.style.marginRight = '8px';
+                btnTop.style.marginTop = '8px';
+
+                // Create Bottom Button
+                const btnBottom = createButton(text, type);
+                btnBottom.style.float = floatDirection;
+                btnBottom.style.marginRight = '8px';
+                btnBottom.style.marginBottom = '8px';
+                btnBottom.style.marginTop = '8px'; // Add some space from text
+
+                // Insert Top Button
+                if (block.firstChild) {
+                    block.insertBefore(btnTop, block.firstChild);
+                } else {
+                    block.appendChild(btnTop);
+                }
+
+                // Insert Bottom Button
+                block.appendChild(btnBottom);
+            }
 
             // Remove from pending once processed
             pendingBlocks.delete(block);
         }
     });
-    // Clear any remaining (failed) blocks from the set to avoid memory leaks? 
-    // No, we want to keep retrying if they are still being streamed.
-    // But we should probably clear them if they are detached.
-    // For now, simple set is fine, but let's clear the set after processing to avoid re-checking static failed blocks forever?
-    // Actually, if it failed, we might want to check again later if more text arrives.
-    // So we only remove from Set if SUCCESS.
-    // But we need to clear the Set of *processed* items.
-    // If it failed, we keep it? No, if it failed, we wait for next mutation to add it back.
     pendingBlocks.clear();
 }, 1000); // Wait 1s after last change to process (good for streaming completion)
 
@@ -123,52 +199,123 @@ const processPendingBlocks = debounce(() => {
 const observer = new MutationObserver((mutations) => {
     let shouldProcess = false;
 
-    mutations.forEach(mutation => {
+    for (const mutation of mutations) {
         // Check added nodes
-        mutation.addedNodes.forEach(node => {
-            if (node.nodeType === 1) { // Element
-                // Check if it is a PRE or contains PRE
-                if (node.tagName === 'PRE') {
-                    pendingBlocks.add(node);
-                    shouldProcess = true;
-                } else {
-                    // Check if the added node is inside a PRE
-                    const parentPre = node.closest('pre');
-                    if (parentPre) {
-                        pendingBlocks.add(parentPre);
-                        shouldProcess = true;
-                    } else if (node.querySelectorAll) {
-                        const pres = node.querySelectorAll('pre');
-                        pres.forEach(p => pendingBlocks.add(p));
-                        if (pres.length > 0) shouldProcess = true;
+        if (mutation.addedNodes.length > 0) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === 1) { // Element
+                    const tagName = node.tagName;
+
+                    // Direct check for PRE or CODE
+                    if (tagName === 'PRE') {
+                        // If PRE has a relevant CODE child, add the CODE child instead
+                        const codeChild = node.querySelector('code');
+                        if (codeChild && isRelevantCodeBlock(codeChild)) {
+                            pendingBlocks.add(codeChild);
+                            shouldProcess = true;
+                        } else {
+                            // Otherwise add PRE (fallback)
+                            pendingBlocks.add(node);
+                            shouldProcess = true;
+                        }
+                    } else if (tagName === 'CODE') {
+                        if (isRelevantCodeBlock(node)) {
+                            pendingBlocks.add(node);
+                            shouldProcess = true;
+                        }
+                    } else if (tagName === 'DIV' || tagName === 'MAIN' || tagName === 'SECTION' || tagName === 'ARTICLE' || tagName === 'TD') {
+                        // Only look inside container elements to avoid expensive queries on small elements (SPAN, A, etc.)
+
+                        // Use getElementsByTagName (faster than querySelectorAll)
+                        // Prioritize CODE elements
+                        const codes = node.getElementsByTagName('code');
+                        for (const code of codes) {
+                            if (isRelevantCodeBlock(code)) {
+                                pendingBlocks.add(code);
+                                shouldProcess = true;
+                            }
+                        }
+
+                        // Check PRE elements, but skip if they contain relevant CODE (to avoid duplicates)
+                        const pres = node.getElementsByTagName('pre');
+                        for (const pre of pres) {
+                            const codeChild = pre.querySelector('code');
+                            if (!codeChild || !isRelevantCodeBlock(codeChild)) {
+                                pendingBlocks.add(pre);
+                                shouldProcess = true;
+                            }
+                        }
                     }
-                }
-            } else if (node.nodeType === 3) { // Text node
-                // If text added, check if parent is inside PRE
-                const parent = node.parentElement;
-                if (parent) {
-                    const parentPre = parent.closest('pre');
-                    if (parentPre) {
-                        pendingBlocks.add(parentPre);
-                        shouldProcess = true;
+                } else if (node.nodeType === 3) { // Text node
+                    // Optimization: Only check parent if it's likely a code block
+                    const parent = node.parentElement;
+                    if (parent) {
+                        const parentTagName = parent.tagName;
+                        if (parentTagName === 'PRE') {
+                            // If PRE has CODE, ignore PRE
+                            const codeChild = parent.querySelector('code');
+                            if (codeChild && isRelevantCodeBlock(codeChild)) {
+                                pendingBlocks.add(codeChild);
+                                shouldProcess = true;
+                            } else {
+                                pendingBlocks.add(parent);
+                                shouldProcess = true;
+                            }
+                        } else if (parentTagName === 'CODE') {
+                            if (isRelevantCodeBlock(parent)) {
+                                pendingBlocks.add(parent);
+                                shouldProcess = true;
+                            }
+                        } else if (parentTagName === 'SPAN' || parentTagName === 'DIV') {
+                            // Sometimes text is inside a span inside a pre/code
+                            const grandParent = parent.parentElement;
+                            if (grandParent) {
+                                if (grandParent.tagName === 'PRE') {
+                                    // If PRE has CODE, ignore PRE
+                                    const codeChild = grandParent.querySelector('code');
+                                    if (codeChild && isRelevantCodeBlock(codeChild)) {
+                                        pendingBlocks.add(codeChild);
+                                        shouldProcess = true;
+                                    } else {
+                                        pendingBlocks.add(grandParent);
+                                        shouldProcess = true;
+                                    }
+                                } else if (grandParent.tagName === 'CODE' && isRelevantCodeBlock(grandParent)) {
+                                    pendingBlocks.add(grandParent);
+                                    shouldProcess = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
-        });
+        }
 
         // Check characterData changes (text updates)
         if (mutation.type === 'characterData') {
             const node = mutation.target;
             const parent = node.parentElement;
             if (parent) {
-                const parentPre = parent.closest('pre');
-                if (parentPre) {
-                    pendingBlocks.add(parentPre);
-                    shouldProcess = true;
+                const parentTagName = parent.tagName;
+                if (parentTagName === 'PRE') {
+                    // If PRE has CODE, ignore PRE
+                    const codeChild = parent.querySelector('code');
+                    if (codeChild && isRelevantCodeBlock(codeChild)) {
+                        pendingBlocks.add(codeChild);
+                        shouldProcess = true;
+                    } else {
+                        pendingBlocks.add(parent);
+                        shouldProcess = true;
+                    }
+                } else if (parentTagName === 'CODE') {
+                    if (isRelevantCodeBlock(parent)) {
+                        pendingBlocks.add(parent);
+                        shouldProcess = true;
+                    }
                 }
             }
         }
-    });
+    }
 
     if (shouldProcess) {
         processPendingBlocks();
@@ -182,8 +329,19 @@ observer.observe(document.body, {
 });
 
 // Initial pass
+// Prioritize CODE elements
+document.querySelectorAll('code').forEach(code => {
+    if (isRelevantCodeBlock(code)) {
+        pendingBlocks.add(code);
+    }
+});
+
+// Check PRE elements, but skip if they contain relevant CODE (to avoid duplicates)
 document.querySelectorAll('pre').forEach(pre => {
-    pendingBlocks.add(pre);
+    const codeChild = pre.querySelector('code');
+    if (!codeChild || !isRelevantCodeBlock(codeChild)) {
+        pendingBlocks.add(pre);
+    }
 });
 processPendingBlocks();
 
