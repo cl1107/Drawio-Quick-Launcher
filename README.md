@@ -41,6 +41,3 @@
     *   `contextMenus`: 用于添加右键菜单项。
     *   `activeTab` / 站点权限: 仅用于在特定 AI 网站（*.google.com, *.chatgpt.com, claude.ai）上注入辅助按钮脚本。
 *   **隐私**：本扩展完全在本地运行，不会收集任何用户数据。XML 数据仅通过 URL 哈希传递给官方的 diagrams.net 网站。
-
----
-**License**: MIT
