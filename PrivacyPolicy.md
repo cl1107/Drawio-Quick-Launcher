@@ -113,6 +113,7 @@ https://app.diagrams.net (draw.io 官方网站）
 
 如有任何隐私相关问题，请联系开发者：
 
-**Email：**brucevanfdm@gmail.com
+**Email：** brucevanfdm@gmail.com
+
  **扩展名称：** Draw.io Quick Launcher
 
