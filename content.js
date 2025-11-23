@@ -46,9 +46,28 @@ function detectDiagramType(text, element) {
     return null;
 }
 
-function createButton(content, type) {
+function getTextContentExcludingButtons(node) {
+    if (!node) return '';
+    if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+        if (node.classList.contains('drawio-launcher-btn')) {
+            return '';
+        }
+        let text = '';
+        for (const child of node.childNodes) {
+            text += getTextContentExcludingButtons(child);
+        }
+        return text;
+    }
+    return '';
+}
+
+function createButton(contentGetter, type) {
     const btn = document.createElement('button');
     btn.textContent = 'Open in Draw.io';
+    btn.className = 'drawio-launcher-btn';
 
     // Check if we're on Claude.ai
     const floatDirection = IS_CLAUDE ? 'left' : 'right';
@@ -73,6 +92,7 @@ function createButton(content, type) {
   `;
     btn.addEventListener('click', (e) => {
         e.stopPropagation(); // Prevent triggering code block selection
+        const content = typeof contentGetter === 'function' ? contentGetter() : contentGetter;
         chrome.runtime.sendMessage({ action: 'open_drawio', content: content, type: type });
     });
     return btn;
@@ -177,6 +197,9 @@ const processPendingBlocks = debounce(() => {
             // Check if we're on Claude.ai or Gemini for button positioning
             const isGemini = block.tagName === 'CODE-BLOCK';
 
+            // Define content getter to retrieve latest text on click
+            const getContent = () => getTextContentExcludingButtons(codeElement || block);
+
             if (IS_CLAUDE) {
                 // Claude specific layout: Block layout (own line) using SPAN (phrasing content) to be valid inside CODE
                 // ... (existing Claude logic) ...
@@ -184,7 +207,7 @@ const processPendingBlocks = debounce(() => {
                 const topContainer = document.createElement('span');
                 topContainer.style.cssText = 'display: flex; justify-content: flex-start; margin-bottom: 8px; width: 100%;';
 
-                const btnTop = createButton(text, type);
+                const btnTop = createButton(getContent, type);
                 // Override styles for block layout
                 btnTop.style.float = 'none';
                 btnTop.style.margin = '0';
@@ -195,7 +218,7 @@ const processPendingBlocks = debounce(() => {
                 const bottomContainer = document.createElement('span');
                 bottomContainer.style.cssText = 'display: flex; justify-content: flex-start; margin-top: 8px; width: 100%;';
 
-                const btnBottom = createButton(text, type);
+                const btnBottom = createButton(getContent, type);
                 btnBottom.style.float = 'none';
                 btnBottom.style.margin = '0';
 
@@ -216,7 +239,7 @@ const processPendingBlocks = debounce(() => {
                 const headerButtons = block.querySelector('.code-block-decoration .buttons');
 
                 if (headerButtons) {
-                    const btn = createButton(text, type);
+                    const btn = createButton(getContent, type);
                     // Override styles for Gemini header
                     btn.style.float = 'none';
                     btn.style.margin = '0 8px 0 0'; // Right margin to separate from copy button
@@ -236,7 +259,7 @@ const processPendingBlocks = debounce(() => {
                     // Try to insert inside the internal container to be "inside" the box
                     const internalContainer = block.querySelector('.formatted-code-block-internal-container');
                     if (internalContainer) {
-                        const btn = createButton(text, type);
+                        const btn = createButton(getContent, type);
                         btn.style.position = 'absolute';
                         btn.style.right = '8px';
                         btn.style.top = '8px';
@@ -249,7 +272,7 @@ const processPendingBlocks = debounce(() => {
                         internalContainer.appendChild(btn);
                     } else {
                         // Ultimate fallback: Default float behavior on the block itself
-                        const btn = createButton(text, type);
+                        const btn = createButton(getContent, type);
                         btn.style.float = 'right';
                         btn.style.margin = '8px';
                         if (block.firstChild) {
@@ -264,13 +287,13 @@ const processPendingBlocks = debounce(() => {
                 const floatDirection = 'right';
 
                 // Create Top Button
-                const btnTop = createButton(text, type);
+                const btnTop = createButton(getContent, type);
                 btnTop.style.float = floatDirection;
                 btnTop.style.marginRight = '8px';
                 btnTop.style.marginTop = '8px';
 
                 // Create Bottom Button
-                const btnBottom = createButton(text, type);
+                const btnBottom = createButton(getContent, type);
                 btnBottom.style.float = floatDirection;
                 btnBottom.style.marginRight = '8px';
                 btnBottom.style.marginBottom = '8px';
