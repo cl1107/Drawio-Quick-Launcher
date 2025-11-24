@@ -7,10 +7,10 @@ chrome.runtime.onInstalled.addListener(() => {
         title: "Open in Draw.io",
         contexts: ["selection"],
         documentUrlPatterns: [
-            "*://*.google.com/*",
-            "*://*.chatgpt.com/*",
-            "*://claude.ai/*",
-            "<all_urls>"
+            "https://gemini.google.com/*",
+            "https://aistudio.google.com/*",
+            "https://chatgpt.com/*",
+            "https://claude.ai/*"
         ]
     });
 });
@@ -140,6 +140,30 @@ function arrayBufferToBase64(buffer) {
  * @returns {string}
  */
 function sanitizeXml(xml) {
+    // Detect if the ampersand already starts a valid entity so we avoid double-escaping.
+    function isPreEscapedEntity(source, index) {
+        if (source[index] !== '&') return false;
+        const semi = source.indexOf(';', index + 1);
+        if (semi === -1) return false;
+
+        const entityBody = source.slice(index + 1, semi);
+        if (!entityBody) return false;
+
+        return /^#x[0-9A-Fa-f]+$/.test(entityBody) ||
+            /^#\d+$/.test(entityBody) ||
+            /^[a-zA-Z][a-zA-Z0-9]+$/.test(entityBody);
+    }
+
+    // Determine if a quote character is likely the end of an attribute value.
+    function isAttributeTerminator(nextChar) {
+        return nextChar === undefined ||
+            nextChar === '' ||
+            nextChar === '>' ||
+            nextChar === '/' ||
+            nextChar === '?' ||
+            /\s/.test(nextChar);
+    }
+
     let result = '';
     let i = 0;
     const len = xml.length;
@@ -185,6 +209,8 @@ function sanitizeXml(xml) {
                     // It's a loose < in text, escape it
                     result += '&lt;';
                 }
+            } else if (char === '&') {
+                result += isPreEscapedEntity(xml, i) ? '&' : '&amp;';
             } else if (char === '>') {
                 // Loose > in text, escape it
                 result += '&gt;';
@@ -222,8 +248,15 @@ function sanitizeXml(xml) {
         }
         else if (state === STATE_ATTR_VALUE_DQ) {
             if (char === '"') {
-                state = STATE_ATTR_NAME;
-                result += char;
+                const nextChar = i + 1 < len ? xml[i + 1] : '';
+                if (isAttributeTerminator(nextChar)) {
+                    state = STATE_ATTR_NAME;
+                    result += char;
+                } else {
+                    result += '&quot;';
+                }
+            } else if (char === '&') {
+                result += isPreEscapedEntity(xml, i) ? '&' : '&amp;';
             } else if (char === '<') {
                 result += '&lt;';
             } else if (char === '>') {
@@ -234,8 +267,15 @@ function sanitizeXml(xml) {
         }
         else if (state === STATE_ATTR_VALUE_Q) {
             if (char === "'") {
-                state = STATE_ATTR_NAME;
-                result += char;
+                const nextChar = i + 1 < len ? xml[i + 1] : '';
+                if (isAttributeTerminator(nextChar)) {
+                    state = STATE_ATTR_NAME;
+                    result += char;
+                } else {
+                    result += '&apos;';
+                }
+            } else if (char === '&') {
+                result += isPreEscapedEntity(xml, i) ? '&' : '&amp;';
             } else if (char === '<') {
                 result += '&lt;';
             } else if (char === '>') {
