@@ -18,8 +18,20 @@ chrome.runtime.onInstalled.addListener(() => {
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'open_drawio') {
-        processDiagram(request.content || request.xml, request.type || 'xml');
+        // Process the diagram asynchronously
+        processDiagram(request.content || request.xml, request.type || 'xml')
+            .then(() => {
+                sendResponse({ success: true });
+            })
+            .catch((error) => {
+                console.error('Error in processDiagram:', error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true; // CRITICAL: Keep the message channel open for async response
     }
+
+    // Handle other message types
+    return false;
 });
 
 // Handle the context menu click

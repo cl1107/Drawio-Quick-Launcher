@@ -1,11 +1,36 @@
 // content.js
 
+// Extension context validation - prevent stale content scripts
+if (!chrome || !chrome.runtime || !chrome.runtime.id) {
+    console.error('[Draw.io Launcher] Extension context is invalid. This content script is stale.');
+    // Stop execution to prevent errors
+    throw new Error('Extension context invalidated - content script is stale');
+}
+
+// Periodic health check for extension context (helps detect extension reloads)
+let extensionContextValid = true;
+const healthCheckInterval = setInterval(() => {
+    try {
+        // Try to access chrome.runtime.id - this will throw if context is invalid
+        if (!chrome.runtime || !chrome.runtime.id) {
+            extensionContextValid = false;
+            clearInterval(healthCheckInterval);
+            console.warn('[Draw.io Launcher] Extension context lost. Page refresh recommended.');
+        }
+    } catch (e) {
+        extensionContextValid = false;
+        clearInterval(healthCheckInterval);
+        console.warn('[Draw.io Launcher] Extension context lost. Page refresh recommended.');
+    }
+}, 5000); // Check every 5 seconds
+
 const BUTTON_ID_PREFIX = 'drawio-launcher-btn-';
 const HOSTNAME = window.location.hostname;
 const IS_CLAUDE = HOSTNAME.includes('claude.ai');
 const IS_CHATGPT = HOSTNAME.includes('chatgpt.com') || HOSTNAME.includes('chat.openai.com');
 const IS_AISTUDIO = HOSTNAME.includes('aistudio.google.com');
 const IS_DEEPSEEK = HOSTNAME.includes('deepseek.com');
+const IS_PERPLEXITY = HOSTNAME.includes('perplexity.ai');
 
 function detectDiagramType(text, element) {
     if (!text || text.length < 10) return null;
@@ -92,10 +117,39 @@ function createButton(contentGetter, type) {
     white-space: nowrap;
     box-sizing: border-box;
   `;
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
         e.stopPropagation(); // Prevent triggering code block selection
         const content = typeof contentGetter === 'function' ? contentGetter() : contentGetter;
-        chrome.runtime.sendMessage({ action: 'open_drawio', content: content, type: type });
+
+        // Check extension context validity
+        if (!extensionContextValid) {
+            alert('🔄 Extension was reloaded.\n\nPlease refresh this page (F5) to continue using the buttons.');
+            return;
+        }
+
+        // Critical check: Verify chrome.runtime is available
+        if (!chrome || !chrome.runtime || !chrome.runtime.id) {
+            extensionContextValid = false;
+            console.error('[Draw.io Launcher] Extension runtime not available.');
+            alert('🔄 Extension error: Runtime not available.\n\nPlease refresh this page (F5).');
+            return;
+        }
+
+        try {
+            // Use Promise-based approach for better error handling in MV3
+            await chrome.runtime.sendMessage({
+                action: 'open_drawio',
+                content: content,
+                type: type
+            });
+            console.log('[Draw.io Launcher] Successfully sent diagram to Draw.io');
+        } catch (error) {
+            console.error('[Draw.io Launcher] Failed to send message:', error);
+            extensionContextValid = false;
+
+            // User-friendly error message
+            alert('🔄 Extension was reloaded or updated.\n\nPlease refresh this page (F5) to continue using the buttons.');
+        }
     });
     return btn;
 }
@@ -123,6 +177,11 @@ function isRelevantCodeBlock(codeElement) {
     if (codeElement.tagName === 'CODE-BLOCK') return true;
 
     if (codeElement.tagName !== 'CODE') return false;
+
+    // For Perplexity, check if the code element is inside a .codeWrapper
+    if (IS_PERPLEXITY && codeElement.closest('.codeWrapper')) {
+        return true;
+    }
 
     const classes = codeElement.className || '';
     // Check for language classes that indicate XML or Mermaid
@@ -358,35 +417,102 @@ const processPendingBlocks = debounce(() => {
                         }
                     }
                 }
-            } else {
-                // ChatGPT Layout: Insert button next to the copy button in the sticky header
-                // Note: .contain-inline-size is a CHILD of the pre element, not a parent
-                const container = block.querySelector('.contain-inline-size');
-                if (container) {
-                    // Find the button container (bg-token-bg-elevated-secondary)
-                    const buttonContainer = container.querySelector('.sticky .bg-token-bg-elevated-secondary');
-                    if (buttonContainer) {
-                        // Check if button already exists to avoid duplicates
-                        if (!buttonContainer.querySelector('.drawio-launcher-btn')) {
+            } else if (IS_PERPLEXITY) {
+                // Perplexity specific layout: Insert into the code block header with copy button
+                // block could be CODE element, need to find the codeWrapper container
+                let codeWrapper = null;
+                if (block.classList && block.classList.contains('codeWrapper')) {
+                    codeWrapper = block;
+                } else {
+                    codeWrapper = block.closest('.codeWrapper');
+                }
+
+                if (codeWrapper) {
+                    // Find the button container (the div that contains the copy button)
+                    const copyButton = codeWrapper.querySelector('button[data-testid="copy-code-button"]');
+
+                    if (copyButton) {
+                        // Find the parent container with bg-subtler class
+                        const buttonContainer = copyButton.parentElement;
+
+                        if (buttonContainer && !buttonContainer.querySelector('.drawio-launcher-btn')) {
                             const btn = createButton(getContent, type);
-                            // Style for ChatGPT header button
+                            // Style for Perplexity header button - match their style
                             btn.style.float = 'none';
                             btn.style.margin = '0';
-                            btn.style.height = '24px';
-                            btn.style.lineHeight = '24px';
+                            btn.style.height = '32px';
+                            btn.style.lineHeight = '32px';
                             btn.style.fontSize = '12px';
                             btn.style.display = 'inline-block';
-                            btn.style.padding = '0 8px';
+                            btn.style.padding = '0 12px';
+                            btn.style.borderRadius = '9999px'; // Match rounded-full
+                            btn.style.marginRight = '4px'; // Add some spacing
 
-                            // Insert before the first button (copy button)
-                            if (buttonContainer.firstChild) {
-                                buttonContainer.insertBefore(btn, buttonContainer.firstChild);
+                            // Insert before the copy button
+                            buttonContainer.insertBefore(btn, copyButton);
+                        }
+                    } else {
+                        // Fallback: Insert at the top of codeWrapper if button container not found
+                        if (!codeWrapper.querySelector('.drawio-launcher-btn')) {
+                            const btn = createButton(getContent, type);
+                            btn.style.position = 'absolute';
+                            btn.style.right = '60px';
+                            btn.style.top = '8px';
+                            btn.style.float = 'none';
+                            btn.style.zIndex = '10';
+
+                            // Ensure codeWrapper has relative positioning
+                            if (getComputedStyle(codeWrapper).position === 'static') {
+                                codeWrapper.style.position = 'relative';
+                            }
+                            codeWrapper.appendChild(btn);
+                        }
+                    }
+                }
+            } else {
+                // ChatGPT Layout: Insert button next to the copy button in the sticky header
+                // Note: block could be CODE element, need to find the PRE parent first
+                const preElement = block.tagName === 'CODE' ? block.closest('pre') : block;
+
+                if (preElement) {
+                    // .contain-inline-size is a CHILD of the PRE element
+                    const container = preElement.querySelector('.contain-inline-size');
+                    if (container) {
+                        // Find the button container (bg-token-bg-elevated-secondary)
+                        const buttonContainer = container.querySelector('.sticky .bg-token-bg-elevated-secondary');
+                        if (buttonContainer) {
+                            // Check if button already exists to avoid duplicates
+                            if (!buttonContainer.querySelector('.drawio-launcher-btn')) {
+                                const btn = createButton(getContent, type);
+                                // Style for ChatGPT header button
+                                btn.style.float = 'none';
+                                btn.style.margin = '0';
+                                btn.style.height = '24px';
+                                btn.style.lineHeight = '24px';
+                                btn.style.fontSize = '12px';
+                                btn.style.display = 'inline-block';
+                                btn.style.padding = '0 8px';
+
+                                // Insert before the first button (copy button)
+                                if (buttonContainer.firstChild) {
+                                    buttonContainer.insertBefore(btn, buttonContainer.firstChild);
+                                } else {
+                                    buttonContainer.appendChild(btn);
+                                }
+                            }
+                        } else {
+                            // Fallback: use old float method if can't find button container
+                            const btn = createButton(getContent, type);
+                            btn.style.float = 'right';
+                            btn.style.margin = '8px';
+                            if (block.firstChild) {
+                                block.insertBefore(btn, block.firstChild);
                             } else {
-                                buttonContainer.appendChild(btn);
+                                block.appendChild(btn);
                             }
                         }
                     } else {
-                        // Fallback: use old float method if can't find button container
+                        // Ultimate fallback if no container found
                         const btn = createButton(getContent, type);
                         btn.style.float = 'right';
                         btn.style.margin = '8px';
@@ -395,16 +521,6 @@ const processPendingBlocks = debounce(() => {
                         } else {
                             block.appendChild(btn);
                         }
-                    }
-                } else {
-                    // Ultimate fallback if no container found
-                    const btn = createButton(getContent, type);
-                    btn.style.float = 'right';
-                    btn.style.margin = '8px';
-                    if (block.firstChild) {
-                        block.insertBefore(btn, block.firstChild);
-                    } else {
-                        block.appendChild(btn);
                     }
                 }
             }
@@ -462,6 +578,15 @@ const observer = new MutationObserver((mutations) => {
                     } else if (tagName === 'DIV' || tagName === 'MAIN' || tagName === 'SECTION' || tagName === 'ARTICLE' || tagName === 'TD' ||
                         tagName === 'MS-CODE-BLOCK' || tagName === 'MAT-EXPANSION-PANEL' || tagName === 'MS-PROMPT-CHUNK' || tagName === 'MS-TEXT-CHUNK') {
                         // Only look inside container elements to avoid expensive queries on small elements (SPAN, A, etc.)
+
+                        // For Perplexity, check if this is a codeWrapper
+                        if (IS_PERPLEXITY && node.classList && node.classList.contains('codeWrapper')) {
+                            const code = node.querySelector('code');
+                            if (code && !processedBlocks.has(code)) {
+                                pendingBlocks.add(code);
+                                shouldProcess = true;
+                            }
+                        }
 
                         // Use getElementsByTagName (faster than querySelectorAll)
                         // Prioritize CODE elements
