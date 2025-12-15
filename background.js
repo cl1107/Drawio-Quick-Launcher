@@ -10,7 +10,9 @@ chrome.runtime.onInstalled.addListener(() => {
             "https://gemini.google.com/*",
             "https://aistudio.google.com/*",
             "https://chatgpt.com/*",
-            "https://claude.ai/*"
+            "https://claude.ai/*",
+            "https://chat.deepseek.com/*",
+            "https://www.perplexity.ai/*"
         ]
     });
 });
